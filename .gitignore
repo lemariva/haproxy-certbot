@@ -1,0 +1,3 @@
+*.pem
+orchestration/haproxy/certs.d/*
+orchestration/haproxy/letsencrypt/*
