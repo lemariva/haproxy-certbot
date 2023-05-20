@@ -24,9 +24,9 @@ substitutions:  # default values
   _ARCHITECTURE: "armv8"
   _MAYOR_REVISION: "1"
   _MINOR_REVISION: "1"
-  _BUILD_ID: "1-SNAPSHOT"
+  _BUILD_ID: "2-SNAPSHOT"
   _HAPROXY_MAJOR: "2.4"
-  _HAPROXY_VERSION: "2.4.9"
+  _HAPROXY_VERSION: "2.4.22"
 timeout: 5400s
 images:
 - 'gcr.io/$PROJECT_ID/haproxy-certbot'
