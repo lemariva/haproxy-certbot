@@ -21,7 +21,7 @@ Therefore, you can use this Docker image to add an SSL layer to your HTTP-based 
 ### Pull the Docker Image
 You can build the Docker image (check the files inside `docker-stack`) or you can pull it from the Dockerhub register:
 ```
-docker pull lemariva/haproxy-certbot:1.1.1-SNAPSHOT
+docker pull lemariva/haproxy-certbot:1.1.2-SNAPSHOT
 ```
 To start the service, `docker-compose` must be installed. Otherwise, you need to configure all the variables and settings that you can find inside the `docker-compose.yml` file.
 
