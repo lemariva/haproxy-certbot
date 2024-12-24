@@ -21,12 +21,12 @@ steps:
           '--file=./Dockerfile.${_ARCHITECTURE}',
           '.']
 substitutions:  # default values
-  _ARCHITECTURE: "aarch64"
+  _ARCHITECTURE: "armv8"
   _MAYOR_REVISION: "1"
   _MINOR_REVISION: "1"
   _BUILD_ID: "3-SNAPSHOT"
   _HAPROXY_MAJOR: "3.0"
-  _HAPROXY_VERSION: "3.0.5"
+  _HAPROXY_VERSION: "3.0.7"
 timeout: 5400s
 images:
 - 'gcr.io/$PROJECT_ID/haproxy-certbot'

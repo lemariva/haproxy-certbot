@@ -3,7 +3,7 @@ FROM balenalib/raspberrypi5-alpine:latest
 RUN [ "cross-build-start" ]
 
 ARG HAPROXY_MAJOR=3.0
-ARG HAPROXY_VERSION=3.0.5
+ARG HAPROXY_VERSION=3.0.7
 
 #metadata labels
 LABEL org.label-schema.build-date="${BUILD_DATE}" \
@@ -80,7 +80,7 @@ RUN set -eux; \
 # smoke test
 	haproxy -v
 
-RUN apk add --no-cache --update supervisor libnl3-cli net-tools iproute2 certbot openssl \
+RUN apk add --no-cache --update supervisor libnl3-cli net-tools iproute2 certbot openssl iptables ip6tables \
     && rm -rf /var/cache/apk/*
 
 RUN mkdir -p /var/log/supervisor
