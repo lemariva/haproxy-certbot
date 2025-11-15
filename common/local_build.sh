@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # Copyright [2021] [LeMaRiva Tech]
 
@@ -13,4 +13,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-/usr/bin/certbot certonly -c /usr/local/etc/letsencrypt/cli.ini "$@"
+
+# Script to build the add-on locally for testing purposes.
+# This script is not intended for production use.
+
+docker buildx build --platform linux/aarch64 \
+    -t lemariva/haproxy-certbot:1.1.8 \
+    --build-arg SEMVER_REVISION=1.1.8 \
+    --build-arg BUILD_DATE=0 \
+    --build-arg VCS_REF=0 \
+    --push .
+    

@@ -1,0 +1,53 @@
+steps:
+# 1. Initialize QEMU to enable multi-arch emulation
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'setup-qemu'
+  args:
+  - run
+  - '--privileged'
+  - 'multiarch/qemu-user-static'
+# 2. Create and use the Buildx builder instance
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'create-builder'
+  args:
+  - buildx
+  - create
+  - '--driver'
+  - 'docker-container'
+  - '--name'
+  - 'mybuilder'
+  - '--use'
+# 3. Build and push the multi-architecture Docker image
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'build-and-push'
+  args: 
+   - buildx 
+   - build
+   - -t
+   - gcr.io/$PROJECT_ID/haproxy-certbot:${_MAYOR_REVISION}.${_MINOR_REVISION}.${_PATCH_REVISION} 
+   - --build-arg
+   - VCS_REF=`git rev-parse --short HEAD`         
+   - --build-arg         
+   - BUILD_DATE=`$(date -u +"%Y-%m-%dT%H:%M:%SZ")`      
+   - --build-arg   
+   - PROJECT_ID=${PROJECT_ID}     
+   - --build-arg   
+   - ARCHITECTURE=${_ARCHITECTURE}
+   - --build-arg
+   - SEMVER_REVISION=${_SEMVER_REVISION}
+   - --build-arg
+   - HAPROXY_MAJOR=${_HAPROXY_MAJOR}
+   - --build-arg
+   - HAPROXY_VERSION=${_HAPROXY_VERSION}
+   - --file=./Dockerfile
+   - --platform=linux/amd64,linux/aarch64
+   - .
+   - --push
+substitutions:  # default values
+  _SEMVER_REVISION: "1.1.8"
+  _ARCHITECTURE: "aarch64"
+  _HAPROXY_MAJOR: "3.2"
+  _HAPROXY_VERSION: "3.2.7"
+timeout: 5400s
+images:
+- 'gcr.io/$PROJECT_ID/haproxy-certbot-hassio-addon'

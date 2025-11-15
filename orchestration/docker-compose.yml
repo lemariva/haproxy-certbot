@@ -1,21 +1,56 @@
+version: "3.8"
+
 services:
   haproxy:
-    restart: unless-stopped
-    container_name: ${LOAD_BALANCER_NAME}
-    image: ${DOCKER_REPO}/haproxy-certbot:${VERSION}
-    volumes:
-     - ./haproxy/config:/config
-     - ./haproxy/letsencrypt:/etc/letsencrypt
-     - ./haproxy/certs.d:/usr/local/etc/haproxy/certs.d
+    # IMPORTANT: Replace with the actual image you build containing haproxy,
+    # certbot, supervisor, the start_haproxy.sh script, and the template file.
+    image: haproxy-certbot:${VERSION_TAG}
+    
+    container_name: haproxy_proxy
+    restart: always
+
+    # Map the ports to the host machine. These values are reflected in 
+    # the MAPPED_HOST_PORT_* environment variables below.
     ports:
-     - "80:80"
-     - "443:443"
-     - "9999:9999"
-    cap_add:
-     - NET_ADMIN
+      - "80:80"     # HTTP for ACME challenges
+      - "443:443"   # HTTPS
+      - "9999:9999" # HAProxy Stats Page
+
+    # Define persistent storage for configuration and certificates
+    volumes:
+      # Mount the persistent directory for Let's Encrypt certificates
+      - ./config/le_certs:/addon_config/le_certs
+      # Mount a data directory for the final haproxy.cfg output
+      - ./data:/data 
+      # Mount the run directory to ensure the PID file can be written
+      - /var/run 
+
+    # The script uses environment variables to configure HAProxy
     environment:
-      HTTP_PORT: 80
-      HTTPS_PORT: 443
-      FORCE_HTTPS_REDIRECT: "true"
-      SERVICE_IP: 192.168.178.161
-      SERVICE_PORT: 8123
+      # --- Core Configuration (Replaces bashio::config) ---
+      CONFIG_DATA_PATH: "data" # Must match the volume mount target above
+      CONFIG_STATS_USER: "haproxy_admin"
+      CONFIG_STATS_PASSWORD: "secure_stats_password_123"
+      CONFIG_HA_IP_ADDRESS: "192.168.1.10" # Internal IP of your Home Assistant/backend
+      CONFIG_HA_PORT: "8123"
+      CONFIG_LOG_LEVEL: "info" # debug, info, notice, warning, error
+
+      # --- Certbot Configuration ---
+      # Set CONFIG_CERT_DOMAIN to enable Certbot logic
+      CONFIG_CERT_DOMAIN: "home.yourdomain.com"
+      CONFIG_CERT_EMAIL: "ssl_admin@yourdomain.com"
+      
+      # --- Mapped Ports (Replaces bashio::addon.port) ---
+      # These variables must match the exposed ports in the 'ports' section above
+      MAPPED_HOST_PORT_80: "80"
+      MAPPED_HOST_PORT_443: "443"
+      MAPPED_HOST_PORT_9999: "9999"
+
+    # Set the entrypoint to the shell script which handles setup and supervisor launch
+    entrypoint: /usr/bin/start_haproxy.sh
+    
+    # Required for TPROXY/IPTABLES setup (Section 4 of the script)
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    network_mode: "host" # Required for proper TPROXY/IP routing visibility
