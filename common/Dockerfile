@@ -94,6 +94,7 @@ RUN apk add --no-cache --update \
     pcre2 \
     ca-certificates \
     curl \
+    bash \
     && rm -rf /var/cache/apk/*
 
 # Create all required directories in one layer
