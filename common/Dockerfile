@@ -101,7 +101,8 @@ RUN apk add --no-cache --update \
 RUN mkdir -p /var/log/supervisor \
     && mkdir -p /usr/local/etc/haproxy/certs.d \
     && mkdir -p /usr/local/etc/letsencrypt \
-    && mkdir -p /config
+    && mkdir -p /config \
+    && mkdir -p /var/www/html
 
 # Copy compiled artifacts from the build stage
 COPY --from=dependencies_and_build /usr/local/sbin/haproxy /usr/local/sbin/haproxy

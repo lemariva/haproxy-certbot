@@ -211,19 +211,65 @@ IP=$(ip route get 1.1.1.1 | awk '/src/ {print $7}' | head -n 1)
 
 if [ -n "$IP" ]; then
     log_info "Setting up IPTABLES/TC for TPROXY/loopback traffic on IP: ${IP}"
-    
-    # IPTABLES setup
-    /usr/sbin/iptables -t mangle -I OUTPUT -p tcp -s "${IP}" --syn -j MARK --set-mark 1
-    
-    # TC setup (Combined for efficiency)
-    tc qdisc add dev lo root handle 1: prio bands 4 || log_warn "TC qdisc add dev lo root failed (may already exist)."
-    tc qdisc add dev lo parent 1:1 handle 10: pfifo limit 1000 || log_warn "TC qdisc add 1:1 failed."
-    tc qdisc add dev lo parent 1:2 handle 20: pfifo limit 1000 || log_warn "TC qdisc add 1:2 failed."
-    tc qdisc add dev lo parent 1:3 handle 30: pfifo limit 1000 || log_warn "TC qdisc add 1:3 failed."
-    
-    nl-qdisc-add --dev=lo --parent=1:4 --id=40: plug --limit 33554432 || log_warn "nl-qdisc-add plug failed."
-    nl-qdisc-add --dev=lo --parent=1:4 --id=40: --update plug --release-indefinite || log_warn "nl-qdisc-add update failed."
-    tc filter add dev lo protocol ip parent 1:0 prio 1 handle 1 fw classid 1:4 || log_warn "TC filter add failed."
+
+    # --- IPTABLES: only insert MARK rule if it doesn't already exist ---
+    if ! /usr/sbin/iptables -t mangle -C OUTPUT -p tcp -s "${IP}" --syn -j MARK --set-mark 1 2>/dev/null; then
+        /usr/sbin/iptables -t mangle -I OUTPUT -p tcp -s "${IP}" --syn -j MARK --set-mark 1 \
+            || log_warn "Failed to add iptables mangle OUTPUT rule for IP ${IP}"
+    else
+        log_info "IPTABLES mangle OUTPUT rule for IP ${IP} already present."
+    fi
+
+    # --- TC qdisc root: add only if not already there ---
+    if ! tc qdisc show dev lo | grep -q "handle 1: root prio"; then
+        tc qdisc add dev lo root handle 1: prio bands 4 \
+            || log_warn "TC qdisc add dev lo root failed."
+    else
+        log_info "TC root qdisc on lo already present."
+    fi
+
+    # --- TC child qdiscs 1:1, 1:2, 1:3 (10:,20:,30:) ---
+    if ! tc qdisc show dev lo | grep -q "parent 1:1 handle 10:"; then
+        tc qdisc add dev lo parent 1:1 handle 10: pfifo limit 1000 \
+            || log_warn "TC qdisc add 1:1 failed."
+    fi
+
+    if ! tc qdisc show dev lo | grep -q "parent 1:2 handle 20:"; then
+        tc qdisc add dev lo parent 1:2 handle 20: pfifo limit 1000 \
+            || log_warn "TC qdisc add 1:2 failed."
+    fi
+
+    if ! tc qdisc show dev lo | grep -q "parent 1:3 handle 30:"; then
+        tc qdisc add dev lo parent 1:3 handle 30: pfifo limit 1000 \
+            || log_warn "TC qdisc add 1:3 failed."
+    fi
+
+    # --- nl-qdisc plug 40: on parent 1:4 ---
+    # Only create the plug if it doesn't already exist
+    if command -v nl-qdisc-list >/dev/null 2>&1; then
+        if ! nl-qdisc-list --dev=lo 2>/dev/null | grep -q "id 40:"; then
+            nl-qdisc-add --dev=lo --parent=1:4 --id=40: plug --limit 33554432 \
+                || log_warn "nl-qdisc-add plug failed."
+        else
+            log_info "nl-qdisc plug 40: already present on lo."
+        fi
+    else
+        # Fallback: try to add, ignore 'Object exists'
+        nl-qdisc-add --dev=lo --parent=1:4 --id=40: plug --limit 33554432 \
+            || log_warn "nl-qdisc-add plug (no nl-qdisc-list available) failed."
+    fi
+
+    # Always ensure the plug is in release-indefinite mode
+    nl-qdisc-add --dev=lo --parent=1:4 --id=40: --update plug --release-indefinite \
+        || log_warn "nl-qdisc-add update failed."
+
+    # --- TC filter: only add fw filter once ---
+    if ! tc filter show dev lo parent 1:0 2>/dev/null | grep -q "fw classid 1:4"; then
+        tc filter add dev lo protocol ip parent 1:0 prio 1 handle 1 fw classid 1:4 \
+            || log_warn "TC filter add failed."
+    else
+        log_info "TC fw filter for mark 1 -> classid 1:4 already present."
+    fi
 else
     log_warn "Could not reliably determine IP address for TPROXY setup. Skipping IPTABLES/TC."
 fi
