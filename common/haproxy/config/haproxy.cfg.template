@@ -55,7 +55,17 @@ backend letsencrypt_http
 
 backend hass-backend
   balance leastconn
-  option tcp-check
+
+  option httpchk GET /
+  http-check expect status 200
   option log-health-checks
-  server haInt __HA_SERVICE_IP__:__HA_SERVICE_PORT__ check inter 5s fall 3 rise 2 resolvers docker_resolver resolve-prefer ipv4
+
+  default-server check inter 5s fall 3 rise 2 resolvers docker_resolver resolve-prefer ipv4
+
+  # Primary HA instance
+  server ha1 __HA_PRIMARY_IP__:__HA_SERVICE_PORT__
+
+  # Backup HA instance
+  server ha2 __HA_SECONDARY_IP__:__HA_SERVICE_PORT__ backup
+
   http-request set-header X-Forwarded-Port %[dst_port]

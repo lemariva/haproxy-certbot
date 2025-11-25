@@ -44,6 +44,26 @@ CERT_PERSISTENT_DIR="/addon_config/le_certs"
 DEFAULT_PEM="${HA_PROXY_DIR}/default.pem"
 TEMPLATE_FILE="/app/haproxy.cfg.template"
 
+# --- Role detection for VRRP MASTER/BACKUP (Method A via keepalived notify_*) ---
+HAPROXY_ROLE_FILE="/var/run/haproxy_role"
+
+is_master() {
+    if [ -f "${HAPROXY_ROLE_FILE}" ]; then
+        # Normalize to uppercase
+        ROLE=$(tr '[:lower:]' '[:upper:]' < "${HAPROXY_ROLE_FILE}" 2>/dev/null)
+        if [ "${ROLE}" = "MASTER" ]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+if is_master; then
+    log_info "Detected node role: MASTER (Certbot operations enabled)."
+else
+    log_info "Detected node role: BACKUP or unknown (Certbot operations will be skipped, using existing certificates only)."
+fi
+
 # --- Environment Variable Configuration Mapping ---
 # ASSUMPTION: The original config values are now passed as environment variables.
 
@@ -51,8 +71,9 @@ TEMPLATE_FILE="/app/haproxy.cfg.template"
 DATA_PATH=${CONFIG_DATA_PATH}
 STATS_USER=${CONFIG_STATS_USER}
 STATS_PASSWORD=${CONFIG_STATS_PASSWORD}
-HA_SERVICE_IP=${CONFIG_HA_IP_ADDRESS} # Renamed for clarity in script
-HA_SERVICE_PORT=${CONFIG_HA_PORT}     # Renamed for clarity in script
+HA_PRIMARY_IP=${CONFIG_HA_PRIMARY_IP}
+HA_SECONDARY_IP=${CONFIG_HA_SECONDARY_IP}
+HA_SERVICE_PORT=${CONFIG_HA_PORT}
 FINAL_CONFIG="/${DATA_PATH}/haproxy.cfg" 
 
 # Log Level Configuration
@@ -84,7 +105,7 @@ log_info "HAProxy mapped ports: HTTP=${HOST_PORT_80_MAPPED}, HTTPS=${HOST_PORT_4
 
 # --- Check Required Variables ---
 # Replaces bashio::config.require
-REQUIRED_VARS=("DATA_PATH" "STATS_USER" "STATS_PASSWORD" "HA_SERVICE_IP" "HA_SERVICE_PORT")
+REQUIRED_VARS=("DATA_PATH" "STATS_USER" "STATS_PASSWORD" "HA_PRIMARY_IP" "HA_SECONDARY_IP" "HA_SERVICE_PORT")
 for VAR_NAME in "${REQUIRED_VARS[@]}"; do
     if [ -z "${!VAR_NAME}" ]; then
         exit_nok "Configuration error: Required environment variable '${VAR_NAME}' is not set."
@@ -109,7 +130,8 @@ log_info "Generating haproxy.cfg at ${FINAL_CONFIG}..."
         s|__HAPROXY_STATS_PASS__|${STATS_PASSWORD}|g;
         s|__HOST_PORT_80__|${HOST_PORT_80_MAPPED}|g;
         s|__HOST_PORT_443__|${HOST_PORT_443_MAPPED}|g;
-        s|__HA_SERVICE_IP__|${HA_SERVICE_IP}|g;
+        s|__HA_PRIMARY_IP__|${HA_PRIMARY_IP}|g;
+        s|__HA_SECONDARY_IP__|${HA_SECONDARY_IP}|g;
         s|__HA_SERVICE_PORT__|${HA_SERVICE_PORT}|g;
         s|__CERT_DOMAIN_STRING__|${CERT_DOMAIN}|g; 
         s|__LOG_LEVEL__|${LOG_LEVEL}|g;
@@ -145,60 +167,66 @@ fi
 # Check for existing Certbot setup and run if necessary
 # Replaces bashio::config.has_value 'cert_domain'
 if [ -n "${CERT_DOMAIN}" ]; then
-    FULLCHAIN_PATH="${CERTBOT_CERT_PATH}/fullchain.pem"
-    
-    # Check if certificate exists (for renewal check or initial skip)
-    if [ -f "${FULLCHAIN_PATH}" ]; then
-        log_info "Existing certificate found. HAProxy will handle renewal."
-    
-    # Initial request logic
-    # Replaces bashio::var.is_empty "${CERT_EMAIL}"
-    elif [ -z "${CERT_EMAIL}" ]; then
-        exit_nok "Certbot is enabled via CONFIG_CERT_DOMAIN but CONFIG_CERT_EMAIL is missing."
-    
-    else
-        log_warn "No existing certificate found. Starting HAProxy temporarily for initial validation..."
-        
-        # Ensure Certbot directories are ready
-        mkdir -p "${CERT_PERSISTENT_DIR}/work" "${CERT_PERSISTENT_DIR}/log"
-        
-        # 1. Start HAProxy in the background for ACME challenge
-        /usr/local/sbin/haproxy -f "${FINAL_CONFIG}" -D -p "${HAPROXY_PID_FILE}" &
-        
-        # 2. Wait for PID file creation (max 10s)
-        for i in {1..10}; do
-            [ -f "${HAPROXY_PID_FILE}" ] && break
-            sleep 1
-        done
 
-        # 3. Process HAProxy PID
-        if [ -f "${HAPROXY_PID_FILE}" ]; then
-            HAPROXY_PID=$(cat "${HAPROXY_PID_FILE}")
-        else
-            log_error "HAProxy failed to start for Certbot validation."
-            exit 1 # Exit script if HAProxy failed to start for the critical task
-        fi
+    # --- Method A: only the MASTER node (as signaled by keepalived) is allowed to run Certbot ---
+    if ! is_master; then
+        log_info "Node is not MASTER according to ${HAPROXY_ROLE_FILE}. Skipping Certbot issuance and renew; using certificates from ${CERT_PERSISTENT_DIR}."
+    else
+        FULLCHAIN_PATH="${CERTBOT_CERT_PATH}/fullchain.pem"
         
-        # 4. Run Certbot
-        log_info "Attempting to obtain certificate for domain: ${CERT_DOMAIN}..."
-        if /usr/bin/certbot-certonly \
-            --config-dir "${CERT_PERSISTENT_DIR}" \
-            --work-dir "${CERT_PERSISTENT_DIR}/work" \
-            --logs-dir "${CERT_PERSISTENT_DIR}/log" \
-            --email "${CERT_EMAIL}" \
-            --domains "${CERT_DOMAIN}" --non-interactive --webroot --webroot-path /var/www/html; then
+        # Check if certificate exists (for renewal check or initial skip)
+        if [ -f "${FULLCHAIN_PATH}" ]; then
+            log_info "Existing certificate found in ${FULLCHAIN_PATH}. HAProxy will use it, and Certbot renewals should also be run only on this MASTER node."
+        
+        # Initial request logic
+        # Replaces bashio::var.is_empty "${CERT_EMAIL}"
+        elif [ -z "${CERT_EMAIL}" ]; then
+            exit_nok "Certbot is enabled via CONFIG_CERT_DOMAIN but CONFIG_CERT_EMAIL is missing."
+        
+        else
+            log_warn "No existing certificate found. Starting HAProxy temporarily for initial validation..."
             
-            log_info "Certificate successfully obtained! Running refresh..."
-            # NOTE: haproxy-refresh is assumed to be an external script/function available
-            # in the execution environment that reloads HAProxy (e.g., `kill -USR2 $(cat /var/run/haproxy.pid)`).
-            haproxy-refresh
-        else
-            log_error "Certbot certificate request failed. HAProxy will use self-signed."
+            # Ensure Certbot directories are ready
+            mkdir -p "${CERT_PERSISTENT_DIR}/work" "${CERT_PERSISTENT_DIR}/log"
+            
+            # 1. Start HAProxy in the background for ACME challenge
+            /usr/local/sbin/haproxy -f "${FINAL_CONFIG}" -D -p "${HAPROXY_PID_FILE}" &
+            
+            # 2. Wait for PID file creation (max 10s)
+            for i in {1..10}; do
+                [ -f "${HAPROXY_PID_FILE}" ] && break
+                sleep 1
+            done
+
+            # 3. Process HAProxy PID
+            if [ -f "${HAPROXY_PID_FILE}" ]; then
+                HAPROXY_PID=$(cat "${HAPROXY_PID_FILE}")
+            else
+                log_error "HAProxy failed to start for Certbot validation."
+                exit 1 # Exit script if HAProxy failed to start for the critical task
+            fi
+            
+            # 4. Run Certbot
+            log_info "Attempting to obtain certificate for domain: ${CERT_DOMAIN}..."
+            if /usr/bin/certbot-certonly \
+                --config-dir "${CERT_PERSISTENT_DIR}" \
+                --work-dir "${CERT_PERSISTENT_DIR}/work" \
+                --logs-dir "${CERT_PERSISTENT_DIR}/log" \
+                --email "${CERT_EMAIL}" \
+                --domains "${CERT_DOMAIN}" --non-interactive --webroot --webroot-path /var/www/html; then
+                
+                log_info "Certificate successfully obtained! Running refresh..."
+                # NOTE: haproxy-refresh is assumed to be an external script/function available
+                # in the execution environment that reloads HAProxy (e.g., `kill -USR2 $(cat /var/run/haproxy.pid)`).
+                haproxy-refresh
+            else
+                log_error "Certbot certificate request failed. HAProxy will use self-signed."
+            fi
+            
+            # 5. Stop the temporary HAProxy instance
+            log_info "Stopping temporary HAProxy (PID ${HAPROXY_PID})."
+            kill "${HAPROXY_PID}" 2>/dev/null || log_warn "Temporary HAProxy was already stopped."
         fi
-        
-        # 5. Stop the temporary HAProxy instance
-        log_info "Stopping temporary HAProxy (PID ${HAPROXY_PID})."
-        kill "${HAPROXY_PID}" 2>/dev/null || log_warn "Temporary HAProxy was already stopped."
     fi
 fi
 

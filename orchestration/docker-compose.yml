@@ -31,7 +31,8 @@ services:
       CONFIG_DATA_PATH: "data" # Must match the volume mount target above
       CONFIG_STATS_USER: "haproxy_admin"
       CONFIG_STATS_PASSWORD: "secure_stats_password_123"
-      CONFIG_HA_IP_ADDRESS: "192.168.1.10" # Internal IP of your Home Assistant/backend
+      CONFIG_HA_PRIMARY_IP: "192.168.1.10" # Internal IP of first Home Assistant/backend
+      CONFIG_HA_SECONDARY_IP: "192.168.1.11" # Backup IP of second Home Assistant/backend (redundance)
       CONFIG_HA_PORT: "8123"
       CONFIG_LOG_LEVEL: "info" # debug, info, notice, warning, error
 

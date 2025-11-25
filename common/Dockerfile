@@ -121,8 +121,8 @@ COPY resources/certbot-renew /usr/bin/certbot-renew
 COPY resources/start.sh /start.sh
 
 # Set permissions and install cron in one layer
-RUN chmod +x /usr/bin/haproxy-refresh /usr/bin/haproxy-restart \
-        /usr/bin/haproxy-check /usr/bin/certbot-certonly /usr/bin/certbot-renew \
+RUN chmod +x /usr/bin/haproxy-refresh /usr/bin/haproxy-restart /usr/bin/haproxy-check \
+        /usr/bin/certbot-certonly /usr/bin/certbot-renew \
         /start.sh \
     && crontab /etc/cron.d/certbot
 
