@@ -5,8 +5,10 @@
 
 cfg_file=$1
 
+[ -f /etc/haproxy-env ] && . /etc/haproxy-env
+
 if [ -z "$cfg_file" ]; then
-    cfg_file="/config/haproxy.cfg"
+    cfg_file="${HAPROXY_CONFIG_FILE}"
     echo "No argument supplied, using ${cfg_file}"
     echo "To use config from host fs try \"(docker exec -i container haproxy-check -) < path_to_your_config\""
 fi
