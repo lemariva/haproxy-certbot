@@ -13,5 +13,11 @@ if [ ! -f "${ROLE_FILE}" ] || ! grep -qi "master" "${ROLE_FILE}" 2>/dev/null; th
     exit 0
 fi
 
+CERT_PERSISTENT_DIR="/addon_config/le_certs"
+
 # Actual renew command
-/usr/bin/certbot -c /usr/local/etc/letsencrypt/cli.ini renew "$@"
+/usr/bin/certbot -c /usr/local/etc/letsencrypt/cli.ini renew \
+    --config-dir "${CERT_PERSISTENT_DIR}" \
+    --work-dir "${CERT_PERSISTENT_DIR}/work" \
+    --logs-dir "${CERT_PERSISTENT_DIR}/log" \
+    "$@"

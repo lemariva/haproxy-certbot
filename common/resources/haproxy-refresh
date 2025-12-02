@@ -3,7 +3,7 @@
 # Licensed under the Apache License, Version 2.0
 
 HA_PROXY_DIR=/usr/local/etc/haproxy
-LE_DIR=/etc/letsencrypt/live
+LE_DIR=/addon_config/le_certs/live
 DOMAINS=$(ls "${LE_DIR}" 2>/dev/null)
 
 echo "[INFO] haproxy-refresh: rebuilding HAProxy cert bundles from ${LE_DIR}"

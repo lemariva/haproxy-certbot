@@ -8,16 +8,16 @@ ARG HAPROXY_VERSION=3.2.7
 # Install all build-time dependencies in a single layer
 RUN set -eux; \
     apk add --no-cache --virtual .build-deps \
-        gcc \
-        libc-dev \
-        linux-headers \
-        lua5.4-dev \
-        make \
-        openssl-dev \
-        pcre2-dev \
-        readline-dev \
-        tar \
-        wget
+    gcc \
+    libc-dev \
+    linux-headers \
+    lua5.4-dev \
+    make \
+    openssl-dev \
+    pcre2-dev \
+    readline-dev \
+    tar \
+    wget
 
 # Download, compile, and install HAProxy
 RUN set -eux; \
@@ -28,13 +28,13 @@ RUN set -eux; \
     rm haproxy.tar.gz; \
     \
     makeOpts=' \
-        TARGET=linux-musl \
-        USE_GETADDRINFO=1 \
-        USE_LUA=1 LUA_INC=/usr/include/lua5.4 LUA_LIB=/usr/lib/lua5.4 \
-        USE_OPENSSL=1 \
-        USE_PCRE2=1 USE_PCRE2_JIT=1 \
-        USE_PROMEX=1 \
-        EXTRA_OBJS="" \
+    TARGET=linux-musl \
+    USE_GETADDRINFO=1 \
+    USE_LUA=1 LUA_INC=/usr/include/lua5.4 LUA_LIB=/usr/lib/lua5.4 \
+    USE_OPENSSL=1 \
+    USE_PCRE2=1 USE_PCRE2_JIT=1 \
+    USE_PROMEX=1 \
+    EXTRA_OBJS="" \
     '; \
     \
     nproc="$(getconf _NPROCESSORS_ONLN)"; \
@@ -46,7 +46,7 @@ RUN set -eux; \
     cp -R /usr/src/haproxy/examples/errorfiles /usr/local/etc/haproxy/errors; \
     rm -rf /usr/src/haproxy; \
     \
-# Smoke test the build
+    # Smoke test the build
     haproxy -v
 
 
@@ -60,24 +60,24 @@ ARG SEMVER_REVISION=1.1.0
 ARG BUILD_DATE=`$(date -u +"%Y-%m-%dT%H:%M:%SZ")`
 
 LABEL org.label-schema.build-date=${BUILD_DATE} \
-      org.label-schema.vcs-url="https://github.com/lemariva/hassio-haproxy-certbot.git" \
-      org.label-schema.name="HAProxy Certbot" \
-      org.label-schema.description="haproxy proxy with letsencrypt certbot for https" \
-      org.label-schema.vcs-ref=${VCS_REF} \
-      org.label-schema.version=${SEMVER_REVISION} \
-      org.label-schema.vendor="LeMaRiva|Tech"
+    org.label-schema.vcs-url="https://github.com/lemariva/hassio-haproxy-certbot.git" \
+    org.label-schema.name="HAProxy Certbot" \
+    org.label-schema.description="haproxy proxy with letsencrypt certbot for https" \
+    org.label-schema.vcs-ref=${VCS_REF} \
+    org.label-schema.version=${SEMVER_REVISION} \
+    org.label-schema.vendor="LeMaRiva|Tech"
 
 # Create the non-root user for HAProxy
 RUN set -eux; \
     addgroup --gid 99 --system haproxy; \
     adduser \
-        --disabled-password \
-        --home /var/lib/haproxy \
-        --ingroup haproxy \
-        --no-create-home \
-        --system \
-        --uid 99 \
-        haproxy
+    --disabled-password \
+    --home /var/lib/haproxy \
+    --ingroup haproxy \
+    --no-create-home \
+    --system \
+    --uid 99 \
+    haproxy
 
 # Install all runtime dependencies in a single layer
 # This includes HAProxy's deps (lua, pcre2) and the add-on's deps
@@ -122,17 +122,17 @@ COPY resources/start.sh /start.sh
 
 # Set permissions and install cron in one layer
 RUN chmod +x /usr/bin/haproxy-refresh /usr/bin/haproxy-restart /usr/bin/haproxy-check \
-        /usr/bin/certbot-certonly /usr/bin/certbot-renew \
-        /start.sh \
+    /usr/bin/certbot-certonly /usr/bin/certbot-renew \
+    /start.sh \
     && crontab /etc/cron.d/certbot
 
 # Add the requested HEALTHCHECK (assumes HAProxy stats are on port 8099)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:9999/stats || exit 1
+    CMD curl -f http://localhost:9999/stats || exit 1
 
 # Expose ports and set volumes
 EXPOSE 443 80 9999
-VOLUME [/etc/letsencrypt/ /usr/local/etc/haproxy/certs.d/]
+VOLUME [/addon_config/le_certs/ /usr/local/etc/haproxy/certs.d/]
 
 # Set the entrypoint
 CMD ["/start.sh"]
