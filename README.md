@@ -16,62 +16,97 @@ To request a certificate from a CA, the entity is going to verify that you are i
 
 Therefore, you can use this Docker image to add an SSL layer to your HTTP-based applications. The following steps are for Home Assistant (HA).
 
-## DIY
+## Usage
 
-### Pull the Docker Image
-You can build the Docker image (check the files inside `docker-stack`) or you can pull it from the Dockerhub register:
-```
-docker pull lemariva/haproxy-certbot:1.1.2-SNAPSHOT
-```
-To start the service, `docker-compose` must be installed. Otherwise, you need to configure all the variables and settings that you can find inside the `docker-compose.yml` file.
+### Docker Configure & Run
+You can run the container using Docker Compose. Below is an example configuration:
 
-### Configure the Docker Service
-But, before starting the service, edit `SERVICE_IP` and `PORT_IP` variables inside the file `docker-compose.yml`. Both should point to the service that you are forwarding. In my case, that is:
-```
-SERVICE_IP: 192.168.178.161
-SERVICE_PORT: 8123
-```
-The IP `192.168.178.161` and port `8123` points to my Raspberry Pi address and the standard port of HA, respectively.
+```yaml
+version: "3.8"
 
-Then, you can start the service by typing the following:
-```
-cd orchestration
-docker-compose up -d
+services:
+  haproxy:
+    image: lemariva/haproxy-certbot:latest
+    container_name: haproxy_proxy
+    restart: always
+    
+    # Required for TPROXY/IPTABLES setup
+    network_mode: "host" 
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    volumes:
+      # Persistent directory for Let's Encrypt certificates
+      - ./config/le_certs:/addon_config/le_certs
+      # Data directory for generated haproxy.cfg
+      - ./data:/data 
+      # Mount /var/run to access haproxy_role file (managed by Keepalived or manually)
+      - /var/run:/var/run 
+
+    environment:
+      # --- Core Configuration ---
+      CONFIG_DATA_PATH: "data"
+      CONFIG_STATS_USER: "haproxy_admin"
+      CONFIG_STATS_PASSWORD: "stats_password"
+      CONFIG_HA_PRIMARY_IP: "192.168.1.10"   # IP of the backend service (e.g. Home Assistant)
+      CONFIG_HA_SECONDARY_IP: "192.168.1.11" # Backup IP (optional/redundant)
+      CONFIG_HA_PORT: "8123"                 # Port of the backend service
+      CONFIG_LOG_LEVEL: "info"
+
+      # --- Certbot Configuration ---
+      CONFIG_CERT_DOMAIN: "home.example.com"
+      CONFIG_CERT_EMAIL: "admin@example.com"
+      
+      # --- Mapped Ports ---
+      # These inform the HAProxy configuration template
+      MAPPED_HOST_PORT_80: "80"
+      MAPPED_HOST_PORT_443: "443"
+      MAPPED_HOST_PORT_9999: "9999"
 ```
 
-### Configure HA
-If you are running HA with version greater than v2021.7.0, you will get a "400 Bad Request" error when I tried to access HA via the HTTP/HTTPS address. A breaking change was added to this version and if you are running a proxy you need to add to the `configuration.yaml` the following:
-```
-# proxy
+### Configuration Variables
+
+| Variable | Description |
+|----------|-------------|
+| `CONFIG_DATA_PATH` | Path inside the container for storing data (should match a volume). |
+| `CONFIG_STATS_USER` | Username for the HAProxy stats page. |
+| `CONFIG_STATS_PASSWORD` | Password for the HAProxy stats page. |
+| `CONFIG_HA_PRIMARY_IP` | Primary IP address of the backend service to load balance to. |
+| `CONFIG_HA_SECONDARY_IP`| Secondary IP address of the backend service (for redundancy). |
+| `CONFIG_HA_PORT` | Port of the backend service. |
+| `CONFIG_CERT_DOMAIN` | The domain name for the SSL certificate. |
+| `CONFIG_CERT_EMAIL` | Email address for Let's Encrypt registration. |
+| `MAPPED_HOST_PORT_80` | External HTTP port (usually 80). |
+| `MAPPED_HOST_PORT_443` | External HTTPS port (usually 443). |
+| `MAPPED_HOST_PORT_9999`| External Stats port. |
+
+### Home Assistant Configuration
+If you are using this with Home Assistant, you must configure it to trust the proxy's IP address (the `X-Forwarded-For` header). Add the following to your `configuration.yaml`:
+
+```yaml
 http:
   use_x_forwarded_for: true
   trusted_proxies:
-    - <<PROXY_IP>>
+    - 172.16.0.0/12  # Private Docker IP range, OR specific container IP
+    - 127.0.0.1      # Localhost
 ```
-If your proxy is running on another machine, you need to change `<<PROXY_IP>>` with the IP address of that machine. But, if you are running the proxy on the same machine that HA is running, you need to change `<<PROXY_IP>>` with the Docker internal IP of the container. You can get that by typing the following:
-```
-docker container inspect `docker ps -aqf "name=haproxy-certbot"` | grep "\"IPAddress\": \"1"
-```
-Note: this works if you didn't change the name to the container (`LOAD_BALANCER_NAME`) inside the `.env` file. Otherwise, you need to change that.
-You get something like this:
-```
-pi@homeassistant:~ $ docker container inspect `docker ps -aqf "name=haproxy-certbot"` | grep "\"IPAddress\": \"1"
-                    "IPAddress": "172.26.0.2",
-```
-The `172.26.0.2` is the IP address that you need.
+*Note: Adjust the `trusted_proxies` IP range to match your Docker network or the specific IP of the HAProxy container.*
 
-### Get the first certificate
-To get a certificate from Let's Encrypt, you need to forward the port `80` and `443` of your computer to the Internet and you need a URL pointing to your router (basically a domain name). Internet providers usually change the IP address that you get every 24 hours. Thus, you need to get a dynamic DNS service. I use [NoIP](https://www.noip.com?fpr=y842j), it's free but you need to confirm your host every 30 days (no big deal). If you are thinking of buying a subscription, you can get a 5 dollars discount using the promo code `REFER5`, After opening the ports on your router and getting a domain name thats point to your router, you can get the first certificate from Let's Encrypt. To do that, you need to get inside the Docker container using:
-```
-docker container exec -it `docker ps -aqf "name=haproxy-certbot"` /bin/bash
-```
-and run the following commands:
-```
-/usr/bin/certbot certonly -c /usr/local/etc/letsencrypt/cli.ini --agree-tos --email <<YOUR_EMAIL>> --domains <<YOUR_DOMAIN>>
+## High Availability & Certificates
 
-haproxy-refresh
-```
-Replace `<<YOUR_EMAIL>>` and `<<YOUR_DOMAIN>>` with your valid email address and the domain that points to your router. If everything goes as planned, you will get a valid SSL certificate for your HA system.
+This image is designed to work in a High Availability (HA) environment (e.g., using Keepalived).
 
-Then, you can integrate your HA to e.g. Google Home Assistant following the steps in [this tutorial](https://www.home-assistant.io/integrations/google_assistant/).
+- **Master/Backup Role**: The container checks the file `/var/run/haproxy_role` to determine its state. 
+    - If the file contains `MASTER`, the container **enables Certbot** to request and renew certificates.
+    - If it contains `BACKUP` (or the file is missing), Certbot operations are skipped, and the container expects valid certificates to be present in the shared persistent volume (`/addon_config/le_certs`).
+
+> **Note**: For a standalone single-node setup, you must ensure this role file exists and contains `MASTER`, or the container will not generate certificates.
+
+## Networking (TPROXY)
+To support Transparent Proxying (preserving client IP addresses), the container requires:
+1. `network_mode: "host"`
+2. `NET_ADMIN` and `NET_RAW` capabilities.
+3. iptables and iproute2 (installed in the image).
+The `start.sh` script automatically configures the necessary `iptables` rules and `tc` qdiscs on container startup.
 
