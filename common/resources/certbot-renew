@@ -5,18 +5,29 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # See: http://www.apache.org/licenses/LICENSE-2.0
 
+set -eu
+
 ROLE_FILE="/var/run/haproxy_role"
 
-# Only run certbot renew if this node is MASTER
 if [ ! -f "${ROLE_FILE}" ] || ! grep -qi "master" "${ROLE_FILE}" 2>/dev/null; then
     echo "[INFO] certbot-renew: Node is not MASTER (role from ${ROLE_FILE}), skipping certbot renew." >&2
     exit 0
 fi
 
 CERT_PERSISTENT_DIR="/addon_config/le_certs"
+IMAGE_CLI_INI="/usr/local/etc/letsencrypt/cli.ini"
+PERSISTENT_CLI_INI="${CERT_PERSISTENT_DIR}/cli.ini"
 
-# Actual renew command
-/usr/bin/certbot -c /usr/local/etc/letsencrypt/cli.ini renew \
+mkdir -p "${CERT_PERSISTENT_DIR}/work" "${CERT_PERSISTENT_DIR}/log"
+
+if [ ! -f "${PERSISTENT_CLI_INI}" ] && [ -f "${IMAGE_CLI_INI}" ]; then
+    cp "${IMAGE_CLI_INI}" "${PERSISTENT_CLI_INI}"
+    chmod 644 "${PERSISTENT_CLI_INI}"
+    echo "[INFO] certbot-renew: Seeded ${PERSISTENT_CLI_INI} from image default." >&2
+fi
+
+exec /usr/bin/certbot renew \
+    --config "${PERSISTENT_CLI_INI}" \
     --config-dir "${CERT_PERSISTENT_DIR}" \
     --work-dir "${CERT_PERSISTENT_DIR}/work" \
     --logs-dir "${CERT_PERSISTENT_DIR}/log" \

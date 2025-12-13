@@ -2,6 +2,8 @@
 #
 # Wrapper that only allows certbot certonly on the MASTER node.
 
+set -eu
+
 ROLE_FILE="/var/run/haproxy_role"
 
 if [ ! -f "${ROLE_FILE}" ] || ! grep -qi "master" "${ROLE_FILE}" 2>/dev/null; then
@@ -9,5 +11,10 @@ if [ ! -f "${ROLE_FILE}" ] || ! grep -qi "master" "${ROLE_FILE}" 2>/dev/null; th
     exit 0
 fi
 
-# Pass all arguments through to certbot certonly
+# Hard fallback: always agree to ToS (unless already present)
+case " $* " in
+  *" --agree-tos "*) : ;;
+  *) set -- --agree-tos "$@" ;;
+esac
+
 exec /usr/bin/certbot certonly "$@"
