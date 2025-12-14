@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+set -euo pipefail
+
 # --- Replacement Logging Functions ---
 log_info() { echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] $1"; }
 log_warn() { echo "$(date '+%Y-%m-%d %H:%M:%S') [WARN] $1" >&2; }
@@ -44,7 +46,7 @@ HAPROXY_ROLE_FILE="/var/run/haproxy_role"
 
 is_master() {
     if [ -f "${HAPROXY_ROLE_FILE}" ]; then
-        ROLE=$(tr '[:lower:]' '[:upper:]' < "${HAPROXY_ROLE_FILE}" 2>/dev/null)
+        ROLE=$(tr '[:lower:]' '[:upper:]' < "${HAPROXY_ROLE_FILE}" 2>/dev/null || true)
         if [ "${ROLE}" = "MASTER" ]; then
             return 0
         fi
@@ -62,12 +64,12 @@ fi
 # 1b. ENVIRONMENT VARIABLE CONFIGURATION
 # -----------------------------------------------------------------------------
 
-DATA_PATH=${CONFIG_DATA_PATH}
-STATS_USER=${CONFIG_STATS_USER}
-STATS_PASSWORD=${CONFIG_STATS_PASSWORD}
-HA_PRIMARY_IP=${CONFIG_HA_PRIMARY_IP}
-HA_SECONDARY_IP=${CONFIG_HA_SECONDARY_IP}
-HA_SERVICE_PORT=${CONFIG_HA_PORT}
+DATA_PATH=${CONFIG_DATA_PATH:-}
+STATS_USER=${CONFIG_STATS_USER:-}
+STATS_PASSWORD=${CONFIG_STATS_PASSWORD:-}
+HA_PRIMARY_IP=${CONFIG_HA_PRIMARY_IP:-}
+HA_SECONDARY_IP=${CONFIG_HA_SECONDARY_IP:-}
+HA_SERVICE_PORT=${CONFIG_HA_PORT:-}
 
 HOSTNAME=$(hostname)
 HAPROXY_CONFIG_FILE="/${DATA_PATH}/haproxy-${HOSTNAME}.cfg"
@@ -76,7 +78,7 @@ chmod 644 /etc/haproxy-env
 export HAPROXY_CONFIG_FILE
 FINAL_CONFIG="${HAPROXY_CONFIG_FILE}"
 
-LOG_LEVEL_RAW=${CONFIG_LOG_LEVEL}
+LOG_LEVEL_RAW=${CONFIG_LOG_LEVEL:-}
 LOG_LEVEL=$(echo "${LOG_LEVEL_RAW}" | awk '{print tolower($0)}')
 if [ -z "${LOG_LEVEL}" ] || [ "${LOG_LEVEL}" = "null" ]; then
     LOG_LEVEL="info"
@@ -86,13 +88,13 @@ if [ "${LOG_LEVEL}" = "warn" ]; then
 fi
 log_info "HAProxy log level set to: ${LOG_LEVEL}"
 
-CERT_EMAIL="${CONFIG_CERT_EMAIL}"
-CERT_DOMAIN="${CONFIG_CERT_DOMAIN}"
+CERT_EMAIL="${CONFIG_CERT_EMAIL:-}"
+CERT_DOMAIN="${CONFIG_CERT_DOMAIN:-}"
 CERTBOT_CERT_PATH="${CERT_PERSISTENT_DIR}/live/${CERT_DOMAIN}"
 
-HOST_PORT_80_MAPPED=${MAPPED_HOST_PORT_80}
-HOST_PORT_443_MAPPED=${MAPPED_HOST_PORT_443}
-HOST_PORT_9999_MAPPED=${MAPPED_HOST_PORT_9999}
+HOST_PORT_80_MAPPED=${MAPPED_HOST_PORT_80:-}
+HOST_PORT_443_MAPPED=${MAPPED_HOST_PORT_443:-}
+HOST_PORT_9999_MAPPED=${MAPPED_HOST_PORT_9999:-}
 
 log_info "HAProxy mapped ports: HTTP=${HOST_PORT_80_MAPPED}, HTTPS=${HOST_PORT_443_MAPPED}, Stats=${HOST_PORT_9999_MAPPED}"
 
@@ -150,6 +152,84 @@ if [ ! -f "${DEFAULT_PEM}" ]; then
     log_info "Default self-signed certificate created."
 fi
 
+# -----------------------------------------------------------------------------
+# 3b. CERTIFICATE REFRESH WATCHER (NO RENEW, JUST RELOAD ON CHANGE)
+# -----------------------------------------------------------------------------
+refresh_haproxy_if_cert_changed() {
+    # Only relevant if domain configured
+    [ -n "${CERT_DOMAIN}" ] || return 0
+
+    local fullchain="${CERTBOT_CERT_PATH}/fullchain.pem"
+    local privkey="${CERTBOT_CERT_PATH}/privkey.pem"
+
+    # Nothing to reload if cert files don't exist yet
+    [ -f "$fullchain" ] || return 0
+    [ -f "$privkey" ]  || return 0
+
+    # Hash both files; reload only if content changed
+    local state_file="${CERT_PERSISTENT_DIR}/.last_cert_hash_${CERT_DOMAIN}"
+    local new_hash
+    new_hash="$(cat "$fullchain" "$privkey" 2>/dev/null | sha256sum | awk '{print $1}')"
+
+    local old_hash=""
+    [ -f "$state_file" ] && old_hash="$(cat "$state_file" 2>/dev/null || true)"
+
+    if [ -n "$new_hash" ] && [ "$new_hash" != "$old_hash" ]; then
+        log_info "Detected updated certificate in ${CERTBOT_CERT_PATH}. Reloading HAProxy..."
+        echo "$new_hash" > "$state_file"
+
+        # Preferred helper (your image already calls this)
+        if command -v haproxy-refresh >/dev/null 2>&1; then
+            haproxy-refresh || log_warn "haproxy-refresh failed."
+            return 0
+        fi
+
+        # Fallback: graceful reload if haproxy already running and pid exists
+        if [ -f "${HAPROXY_PID_FILE}" ]; then
+            local pid
+            pid="$(cat "${HAPROXY_PID_FILE}" 2>/dev/null || true)"
+            if [ -n "$pid" ]; then
+                /usr/local/sbin/haproxy -f "${FINAL_CONFIG}" -D -p "${HAPROXY_PID_FILE}" -sf "$pid" \
+                    || log_warn "HAProxy graceful reload failed."
+            fi
+        fi
+    fi
+}
+
+start_cert_watcher() {
+    [ -n "${CERT_DOMAIN}" ] || return 0
+
+    # run once at startup (covers "cert already exists when container boots")
+    refresh_haproxy_if_cert_changed
+
+    # watch for changes (inotify preferred; polling fallback)
+    if command -v inotifywait >/dev/null 2>&1; then
+        log_info "Starting certificate watcher (inotify) for ${CERTBOT_CERT_PATH}..."
+        (
+            while true; do
+                inotifywait -q -e close_write,move,create,attrib,delete "${CERTBOT_CERT_PATH}" 2>/dev/null || sleep 2
+                refresh_haproxy_if_cert_changed
+            done
+        ) &
+    else
+        log_info "Starting certificate watcher (polling every 30s) for ${CERTBOT_CERT_PATH}..."
+        (
+            while true; do
+                sleep 30
+                refresh_haproxy_if_cert_changed
+            done
+        ) &
+    fi
+}
+
+# Start watcher on ALL nodes.
+# - MASTER may issue/renew elsewhere; watcher will still reload if files change.
+# - BACKUP will never renew, but will reload when shared cert updates.
+start_cert_watcher
+
+# -----------------------------------------------------------------------------
+# 3c. CERTBOT ISSUANCE (MASTER ONLY) - initial issuance if missing
+# -----------------------------------------------------------------------------
 if [ -n "${CERT_DOMAIN}" ]; then
     if ! is_master; then
         log_info "Node is not MASTER according to ${HAPROXY_ROLE_FILE}. Skipping Certbot issuance and renew; using certificates from ${CERT_PERSISTENT_DIR}."
@@ -157,7 +237,9 @@ if [ -n "${CERT_DOMAIN}" ]; then
         FULLCHAIN_PATH="${CERTBOT_CERT_PATH}/fullchain.pem"
 
         if [ -f "${FULLCHAIN_PATH}" ]; then
-            log_info "Existing certificate found in ${FULLCHAIN_PATH}. HAProxy will use it, and Certbot renewals should also be run only on this MASTER node."
+            log_info "Existing certificate found in ${FULLCHAIN_PATH}. HAProxy will use it. (Renewals should run only on MASTER.)"
+            # ensure we reload if this container started with old in-memory cert
+            refresh_haproxy_if_cert_changed
         elif [ -z "${CERT_EMAIL}" ]; then
             exit_nok "Certbot is enabled via CONFIG_CERT_DOMAIN but CONFIG_CERT_EMAIL is missing."
         else
@@ -189,7 +271,12 @@ if [ -n "${CERT_DOMAIN}" ]; then
                 -d "${CERT_DOMAIN}"; then
 
                 log_info "Certificate successfully obtained! Running refresh..."
-                haproxy-refresh
+                # This will usually rebuild PEM/chain or reload HAProxy
+                if command -v haproxy-refresh >/dev/null 2>&1; then
+                    haproxy-refresh || log_warn "haproxy-refresh failed."
+                else
+                    refresh_haproxy_if_cert_changed
+                fi
             else
                 log_error "Certbot certificate request failed. HAProxy will use self-signed."
             fi
