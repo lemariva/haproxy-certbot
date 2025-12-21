@@ -181,6 +181,7 @@ refresh_haproxy_if_cert_changed() {
         # Preferred helper (your image already calls this)
         if command -v haproxy-refresh >/dev/null 2>&1; then
             haproxy-refresh || log_warn "haproxy-refresh failed."
+            haproxy-restart || log_warn "haproxy-restart failed."
             return 0
         fi
 
@@ -274,6 +275,7 @@ if [ -n "${CERT_DOMAIN}" ]; then
                 # This will usually rebuild PEM/chain or reload HAProxy
                 if command -v haproxy-refresh >/dev/null 2>&1; then
                     haproxy-refresh || log_warn "haproxy-refresh failed."
+                    haproxy-restart || log_warn "haproxy-restart failed."
                 else
                     refresh_haproxy_if_cert_changed
                 fi
