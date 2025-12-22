@@ -41,12 +41,12 @@ if [ ! -f "${CERT_PERSISTENT_DIR}/cli.ini" ] && [ -f "${IMAGE_CLI_INI}" ]; then
     log_info "Seeded cli.ini to ${CERT_PERSISTENT_DIR}/cli.ini"
 fi
 
-# --- Role detection for VRRP MASTER/BACKUP ---
-HAPROXY_ROLE_FILE="/var/run/haproxy_role"
+# --- Role detection for VRRP MASTER/BACKUP (from keepalived) ---
+KEEPALIVED_ROLE_FILE="/var/run/keepalived_role"
 
 is_master() {
-    if [ -f "${HAPROXY_ROLE_FILE}" ]; then
-        ROLE=$(tr '[:lower:]' '[:upper:]' < "${HAPROXY_ROLE_FILE}" 2>/dev/null || true)
+    if [ -f "${KEEPALIVED_ROLE_FILE}" ]; then
+        ROLE=$(tr '[:lower:]' '[:upper:]' < "${KEEPALIVED_ROLE_FILE}" 2>/dev/null || true)
         if [ "${ROLE}" = "MASTER" ]; then
             return 0
         fi
@@ -55,9 +55,9 @@ is_master() {
 }
 
 if is_master; then
-    log_info "Detected node role: MASTER (Certbot operations enabled)."
+    log_info "Detected node role: MASTER (Certbot renew enabled)."
 else
-    log_info "Detected node role: BACKUP or unknown (Certbot operations will be skipped, using existing certificates only)."
+    log_info "Detected node role: BACKUP or unknown (Certbot operations will be skipped; certificate refresh still enabled)."
 fi
 
 # -----------------------------------------------------------------------------
@@ -153,20 +153,53 @@ if [ ! -f "${DEFAULT_PEM}" ]; then
 fi
 
 # -----------------------------------------------------------------------------
-# 3b. CERTIFICATE REFRESH WATCHER (NO RENEW, JUST RELOAD ON CHANGE)
+# 3b. CERTIFICATE REFRESH/RELOAD
+#    Requirements:
+#      - ALWAYS: if cert exists under live/, execute haproxy-refresh + haproxy-restart
+#        at container startup (all nodes).
+#      - ALWAYS: run watcher on all nodes to reload when cert content changes.
+#      - RENEW/ISSUE: only on MASTER.
 # -----------------------------------------------------------------------------
-refresh_haproxy_if_cert_changed() {
-    # Only relevant if domain configured
+
+# Force refresh/restart if cert exists (ALWAYS at startup, all nodes)
+force_haproxy_refresh_if_cert_present() {
     [ -n "${CERT_DOMAIN}" ] || return 0
 
     local fullchain="${CERTBOT_CERT_PATH}/fullchain.pem"
     local privkey="${CERTBOT_CERT_PATH}/privkey.pem"
 
-    # Nothing to reload if cert files don't exist yet
     [ -f "$fullchain" ] || return 0
     [ -f "$privkey" ]  || return 0
 
-    # Hash both files; reload only if content changed
+    log_info "Certificate present under ${CERTBOT_CERT_PATH}. Forcing haproxy-refresh + haproxy-restart..."
+
+    if command -v haproxy-refresh >/dev/null 2>&1; then
+        haproxy-refresh || log_warn "haproxy-refresh failed."
+        haproxy-restart || log_warn "haproxy-restart failed."
+        return 0
+    fi
+
+    # Fallback: graceful reload if haproxy already running and pid exists
+    if [ -f "${HAPROXY_PID_FILE}" ]; then
+        local pid
+        pid="$(cat "${HAPROXY_PID_FILE}" 2>/dev/null || true)"
+        if [ -n "$pid" ]; then
+            /usr/local/sbin/haproxy -f "${FINAL_CONFIG}" -D -p "${HAPROXY_PID_FILE}" -sf "$pid" \
+                || log_warn "HAProxy graceful reload failed."
+        fi
+    fi
+}
+
+# Reload HAProxy ONLY if certificate content changed (used by watcher and after renew)
+refresh_haproxy_if_cert_changed() {
+    [ -n "${CERT_DOMAIN}" ] || return 0
+
+    local fullchain="${CERTBOT_CERT_PATH}/fullchain.pem"
+    local privkey="${CERTBOT_CERT_PATH}/privkey.pem"
+
+    [ -f "$fullchain" ] || return 0
+    [ -f "$privkey" ]  || return 0
+
     local state_file="${CERT_PERSISTENT_DIR}/.last_cert_hash_${CERT_DOMAIN}"
     local new_hash
     new_hash="$(cat "$fullchain" "$privkey" 2>/dev/null | sha256sum | awk '{print $1}')"
@@ -178,14 +211,12 @@ refresh_haproxy_if_cert_changed() {
         log_info "Detected updated certificate in ${CERTBOT_CERT_PATH}. Reloading HAProxy..."
         echo "$new_hash" > "$state_file"
 
-        # Preferred helper (your image already calls this)
         if command -v haproxy-refresh >/dev/null 2>&1; then
             haproxy-refresh || log_warn "haproxy-refresh failed."
             haproxy-restart || log_warn "haproxy-restart failed."
             return 0
         fi
 
-        # Fallback: graceful reload if haproxy already running and pid exists
         if [ -f "${HAPROXY_PID_FILE}" ]; then
             local pid
             pid="$(cat "${HAPROXY_PID_FILE}" 2>/dev/null || true)"
@@ -200,10 +231,12 @@ refresh_haproxy_if_cert_changed() {
 start_cert_watcher() {
     [ -n "${CERT_DOMAIN}" ] || return 0
 
-    # run once at startup (covers "cert already exists when container boots")
+    # Requirement: ALWAYS run refresh+restart at startup if cert exists
+    force_haproxy_refresh_if_cert_present
+
+    # Also initialize hash state / reload if needed
     refresh_haproxy_if_cert_changed
 
-    # watch for changes (inotify preferred; polling fallback)
     if command -v inotifywait >/dev/null 2>&1; then
         log_info "Starting certificate watcher (inotify) for ${CERTBOT_CERT_PATH}..."
         (
@@ -223,71 +256,101 @@ start_cert_watcher() {
     fi
 }
 
-# Start watcher on ALL nodes.
-# - MASTER may issue/renew elsewhere; watcher will still reload if files change.
-# - BACKUP will never renew, but will reload when shared cert updates.
+# Start watcher on ALL nodes
 start_cert_watcher
 
 # -----------------------------------------------------------------------------
-# 3c. CERTBOT ISSUANCE (MASTER ONLY) - initial issuance if missing
+# 3c. CERTBOT ISSUANCE + RENEW (MASTER ONLY)
 # -----------------------------------------------------------------------------
-if [ -n "${CERT_DOMAIN}" ]; then
+start_cert_renewer_master_only() {
+    [ -n "${CERT_DOMAIN}" ] || return 0
+
     if ! is_master; then
-        log_info "Node is not MASTER according to ${HAPROXY_ROLE_FILE}. Skipping Certbot issuance and renew; using certificates from ${CERT_PERSISTENT_DIR}."
-    else
-        FULLCHAIN_PATH="${CERTBOT_CERT_PATH}/fullchain.pem"
+        log_info "Node is not MASTER according to ${KEEPALIVED_ROLE_FILE}. Certbot issuance/renew skipped (refresh watcher still active)."
+        return 0
+    fi
 
-        if [ -f "${FULLCHAIN_PATH}" ]; then
-            log_info "Existing certificate found in ${FULLCHAIN_PATH}. HAProxy will use it. (Renewals should run only on MASTER.)"
-            # ensure we reload if this container started with old in-memory cert
-            refresh_haproxy_if_cert_changed
-        elif [ -z "${CERT_EMAIL}" ]; then
-            exit_nok "Certbot is enabled via CONFIG_CERT_DOMAIN but CONFIG_CERT_EMAIL is missing."
+    if [ -z "${CERT_EMAIL}" ]; then
+        exit_nok "Certbot is enabled via CONFIG_CERT_DOMAIN but CONFIG_CERT_EMAIL is missing."
+    fi
+
+    mkdir -p "${CERT_PERSISTENT_DIR}/work" "${CERT_PERSISTENT_DIR}/log"
+
+    local fullchain_path="${CERTBOT_CERT_PATH}/fullchain.pem"
+
+    # --- Initial issuance if missing ---
+    if [ ! -f "${fullchain_path}" ]; then
+        log_warn "No existing certificate found. Starting HAProxy temporarily for initial validation..."
+
+        /usr/local/sbin/haproxy -f "${FINAL_CONFIG}" -D -p "${HAPROXY_PID_FILE}" &
+        for i in {1..10}; do
+            [ -f "${HAPROXY_PID_FILE}" ] && break
+            sleep 1
+        done
+
+        if [ -f "${HAPROXY_PID_FILE}" ]; then
+            HAPROXY_PID=$(cat "${HAPROXY_PID_FILE}")
         else
-            log_warn "No existing certificate found. Starting HAProxy temporarily for initial validation..."
+            log_error "HAProxy failed to start for Certbot validation."
+            exit 1
+        fi
 
-            mkdir -p "${CERT_PERSISTENT_DIR}/work" "${CERT_PERSISTENT_DIR}/log"
+        log_info "Attempting to obtain certificate for domain: ${CERT_DOMAIN}..."
 
-            /usr/local/sbin/haproxy -f "${FINAL_CONFIG}" -D -p "${HAPROXY_PID_FILE}" &
-            for i in {1..10}; do
-                [ -f "${HAPROXY_PID_FILE}" ] && break
-                sleep 1
-            done
+        if /usr/bin/certbot-certonly \
+            --config "${CERT_PERSISTENT_DIR}/cli.ini" \
+            --config-dir "${CERT_PERSISTENT_DIR}" \
+            --work-dir "${CERT_PERSISTENT_DIR}/work" \
+            --logs-dir "${CERT_PERSISTENT_DIR}/log" \
+            --email "${CERT_EMAIL}" \
+            -d "${CERT_DOMAIN}"; then
+            log_info "Certificate successfully obtained."
+        else
+            log_error "Certbot certificate request failed. HAProxy will use self-signed or existing certs."
+        fi
 
-            if [ -f "${HAPROXY_PID_FILE}" ]; then
-                HAPROXY_PID=$(cat "${HAPROXY_PID_FILE}")
-            else
-                log_error "HAProxy failed to start for Certbot validation."
-                exit 1
-            fi
+        log_info "Stopping temporary HAProxy (PID ${HAPROXY_PID})."
+        kill "${HAPROXY_PID}" 2>/dev/null || log_warn "Temporary HAProxy was already stopped."
 
-            log_info "Attempting to obtain certificate for domain: ${CERT_DOMAIN}..."
+        # Force refresh/restart if cert now exists; then do hash-based refresh as well
+        force_haproxy_refresh_if_cert_present
+        refresh_haproxy_if_cert_changed
+    else
+        log_info "Existing certificate found in ${fullchain_path}. MASTER will handle renewals."
 
-            if /usr/bin/certbot-certonly \
+        # At start on MASTER, still force refresh+restart if cert exists
+        force_haproxy_refresh_if_cert_present
+        refresh_haproxy_if_cert_changed
+    fi
+
+    # --- Periodic renew loop (MASTER only) ---
+    # certbot will renew only when needed.
+    local renew_interval="${CERTBOT_RENEW_INTERVAL_SECONDS:-43200}"  # default 12h
+    log_info "Starting Certbot renew loop on MASTER (interval: ${renew_interval}s)..."
+
+    (
+        while true; do
+            sleep "${renew_interval}"
+
+            log_info "Running certbot renew (MASTER)..."
+            if /usr/bin/certbot renew \
                 --config "${CERT_PERSISTENT_DIR}/cli.ini" \
                 --config-dir "${CERT_PERSISTENT_DIR}" \
                 --work-dir "${CERT_PERSISTENT_DIR}/work" \
-                --logs-dir "${CERT_PERSISTENT_DIR}/log" \
-                --email "${CERT_EMAIL}" \
-                -d "${CERT_DOMAIN}"; then
-
-                log_info "Certificate successfully obtained! Running refresh..."
-                # This will usually rebuild PEM/chain or reload HAProxy
-                if command -v haproxy-refresh >/dev/null 2>&1; then
-                    haproxy-refresh || log_warn "haproxy-refresh failed."
-                    haproxy-restart || log_warn "haproxy-restart failed."
-                else
-                    refresh_haproxy_if_cert_changed
-                fi
+                --logs-dir "${CERT_PERSISTENT_DIR}/log"; then
+                log_info "certbot renew finished (success)."
             else
-                log_error "Certbot certificate request failed. HAProxy will use self-signed."
+                log_warn "certbot renew finished (with errors)."
             fi
 
-            log_info "Stopping temporary HAProxy (PID ${HAPROXY_PID})."
-            kill "${HAPROXY_PID}" 2>/dev/null || log_warn "Temporary HAProxy was already stopped."
-        fi
-    fi
-fi
+            # If renew updated certs, watcher/hash refresh will reload; also force refresh if cert exists
+            force_haproxy_refresh_if_cert_present
+            refresh_haproxy_if_cert_changed
+        done
+    ) &
+}
+
+start_cert_renewer_master_only
 
 # -----------------------------------------------------------------------------
 # 4. NETWORKING (IPTABLES / TC SETUP)

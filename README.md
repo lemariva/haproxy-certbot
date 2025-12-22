@@ -97,7 +97,7 @@ http:
 
 This image is designed to work in a High Availability (HA) environment (e.g., using Keepalived).
 
-- **Master/Backup Role**: The container checks the file `/var/run/haproxy_role` to determine its state. 
+- **Master/Backup Role**: The container checks the file `/var/run/keepalived_role` to determine its state. 
     - If the file contains `MASTER`, the container **enables Certbot** to request and renew certificates.
     - If it contains `BACKUP` (or the file is missing), Certbot operations are skipped, and the container expects valid certificates to be present in the shared persistent volume (`/addon_config/le_certs`).
 

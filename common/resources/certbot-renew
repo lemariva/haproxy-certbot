@@ -7,7 +7,7 @@
 
 set -eu
 
-ROLE_FILE="/var/run/haproxy_role"
+ROLE_FILE="/var/run/keepalived_role"
 
 if [ ! -f "${ROLE_FILE}" ] || ! grep -qi "master" "${ROLE_FILE}" 2>/dev/null; then
     echo "[INFO] certbot-renew: Node is not MASTER (role from ${ROLE_FILE}), skipping certbot renew." >&2
