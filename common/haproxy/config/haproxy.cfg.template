@@ -39,132 +39,15 @@ frontend http_in
   bind *:__HOST_PORT_80__ alpn h2,http/1.1
   option forwardfor
   http-request add-header "X-Forwarded-Proto" "http"
-
   acl letsencrypt_http_acl path_beg /.well-known/acme-challenge/
   redirect scheme https if !letsencrypt_http_acl { env(FORCE_HTTPS_REDIRECT) -m str true }
   use_backend letsencrypt_http if letsencrypt_http_acl
-  
-  # =========================
-  # Rate limiting (per IP)
-  # =========================
-  stick-table type ip size 200k expire 10m store http_req_rate(10s),gpc0
-  http-request track-sc0 src
-  acl abuse sc_http_req_rate(0) gt 30
-  http-request deny deny_status 429 if abuse
-
-  # =========================
-  # Common internet scan blocking
-  # =========================
-
-  acl bad_traversal path_reg -i (\.\./|%2e%2e|%252e%252e|%2f%2e%2e|%5c%2e%2e|%2e%2f|%252f|%255c)
-  acl bad_dotfiles  path_reg -i (^|/)\.(git|svn|hg|bzr)(/|$)
-  acl bad_hidden    path_reg -i (^|/)\.(env|DS_Store|htaccess|htpasswd)(/|$)
-
-  acl bad_cms path_reg -i ^/(wp-admin|wp-login\.php|wp-content|wp-includes|xmlrpc\.php|wp-json)(/|$)
-  acl bad_phpmyadmin path_reg -i ^/(phpmyadmin|pma|mysqladmin|adminer)(/|$)
-  acl bad_drupal path_reg -i ^/(user/login|core|sites/default)(/|$)
-  acl bad_joomla path_reg -i ^/(administrator|components|modules|templates)(/|$)
-
-  acl bad_admin_panels path_reg -i ^/(admin|administrator|login|webadmin|manager|console|cgi-bin|shell|boaform)(/|$)
-  acl bad_vendor path_reg -i ^/(HNAP1|cgi-bin|cgi|rpc|RPC2|webfig|rom-0|setup\.cgi|apply\.cgi)(/|$)
-
-  acl bad_files path_reg -i ^/(config|configuration|backup|backups|dump|dumps|db|database|\.well-known)(/|$)
-  acl bad_exts path_reg -i \.(sql|sqlite|db|bak|old|backup|zip|tar|tgz|gz|7z|rar|log|ini|yml|yaml|toml|conf|swp|pem|key)$
-
-  acl bad_query query_reg -i (php://|pearcmd|config-create|base64_decode|/etc/passwd|proc/self|cmd=|wget|curl|nc\s|bash\s|sh\s|powershell|whoami|id=|uname|%00|%3c\?php|<\?php)
-
-  acl bad_method method -i TRACE TRACK
-  acl bad_ua hdr_sub(User-Agent) -i zgrab masscan nikto sqlmap gobuster feroxbuster dirbuster ffuf
-
-  http-request set-var(txn.bad) int(0)
-  http-request set-var(txn.bad) add(1) if bad_traversal
-  http-request set-var(txn.bad) add(1) if bad_dotfiles
-  http-request set-var(txn.bad) add(1) if bad_hidden
-  http-request set-var(txn.bad) add(1) if bad_cms
-  http-request set-var(txn.bad) add(1) if bad_phpmyadmin
-  http-request set-var(txn.bad) add(1) if bad_drupal
-  http-request set-var(txn.bad) add(1) if bad_joomla
-  http-request set-var(txn.bad) add(1) if bad_admin_panels
-  http-request set-var(txn.bad) add(1) if bad_vendor
-  http-request set-var(txn.bad) add(1) if bad_files
-  http-request set-var(txn.bad) add(1) if bad_exts
-  http-request set-var(txn.bad) add(1) if bad_query
-  http-request set-var(txn.bad) add(1) if bad_method
-  http-request set-var(txn.bad) add(1) if bad_ua
-
-  http-request deny deny_status 403 if bad_traversal
-  http-request deny deny_status 403 if bad_dotfiles
-  http-request deny deny_status 403 if bad_hidden
-  http-request deny deny_status 403 if bad_query
-  http-request deny deny_status 403 if bad_method
-
-  acl multi_bad var(txn.bad) ge 2
-  http-request deny deny_status 403 if multi_bad
-
   default_backend hass-backend
 
 frontend https_in
   bind *:__HOST_PORT_443__ ssl crt /usr/local/etc/haproxy/default.pem crt /usr/local/etc/haproxy/certs.d ciphers ECDHE-RSA-AES256-SHA:RC4-SHA:RC4:HIGH:!MD5:!aNULL:!EDH:!AESGCM alpn h2,http/1.1
   option forwardfor
   http-request add-header "X-Forwarded-Proto" "https"
-
-  # =========================
-  # Rate limiting (per IP)
-  # =========================
-  stick-table type ip size 200k expire 10m store http_req_rate(10s),gpc0
-  http-request track-sc0 src
-  acl abuse sc_http_req_rate(0) gt 30
-  http-request deny deny_status 429 if abuse
-
-  # =========================
-  # Common internet scan blocking
-  # =========================
-
-  acl bad_traversal path_reg -i (\.\./|%2e%2e|%252e%252e|%2f%2e%2e|%5c%2e%2e|%2e%2f|%252f|%255c)
-  acl bad_dotfiles  path_reg -i (^|/)\.(git|svn|hg|bzr)(/|$)
-  acl bad_hidden    path_reg -i (^|/)\.(env|DS_Store|htaccess|htpasswd)(/|$)
-
-  acl bad_cms path_reg -i ^/(wp-admin|wp-login\.php|wp-content|wp-includes|xmlrpc\.php|wp-json)(/|$)
-  acl bad_phpmyadmin path_reg -i ^/(phpmyadmin|pma|mysqladmin|adminer)(/|$)
-  acl bad_drupal path_reg -i ^/(user/login|core|sites/default)(/|$)
-  acl bad_joomla path_reg -i ^/(administrator|components|modules|templates)(/|$)
-
-  acl bad_admin_panels path_reg -i ^/(admin|administrator|login|webadmin|manager|console|cgi-bin|shell|boaform)(/|$)
-  acl bad_vendor path_reg -i ^/(HNAP1|cgi-bin|cgi|rpc|RPC2|webfig|rom-0|setup\.cgi|apply\.cgi)(/|$)
-
-  acl bad_files path_reg -i ^/(config|configuration|backup|backups|dump|dumps|db|database|\.well-known)(/|$)
-  acl bad_exts path_reg -i \.(sql|sqlite|db|bak|old|backup|zip|tar|tgz|gz|7z|rar|log|ini|yml|yaml|toml|conf|swp|pem|key)$
-
-  acl bad_query query_reg -i (php://|pearcmd|config-create|base64_decode|/etc/passwd|proc/self|cmd=|wget|curl|nc\s|bash\s|sh\s|powershell|whoami|id=|uname|%00|%3c\?php|<\?php)
-
-  acl bad_method method -i TRACE TRACK
-  acl bad_ua hdr_sub(User-Agent) -i zgrab masscan nikto sqlmap gobuster feroxbuster dirbuster ffuf
-
-  http-request set-var(txn.bad) int(0)
-  http-request set-var(txn.bad) add(1) if bad_traversal
-  http-request set-var(txn.bad) add(1) if bad_dotfiles
-  http-request set-var(txn.bad) add(1) if bad_hidden
-  http-request set-var(txn.bad) add(1) if bad_cms
-  http-request set-var(txn.bad) add(1) if bad_phpmyadmin
-  http-request set-var(txn.bad) add(1) if bad_drupal
-  http-request set-var(txn.bad) add(1) if bad_joomla
-  http-request set-var(txn.bad) add(1) if bad_admin_panels
-  http-request set-var(txn.bad) add(1) if bad_vendor
-  http-request set-var(txn.bad) add(1) if bad_files
-  http-request set-var(txn.bad) add(1) if bad_exts
-  http-request set-var(txn.bad) add(1) if bad_query
-  http-request set-var(txn.bad) add(1) if bad_method
-  http-request set-var(txn.bad) add(1) if bad_ua
-
-  http-request deny deny_status 403 if bad_traversal
-  http-request deny deny_status 403 if bad_dotfiles
-  http-request deny deny_status 403 if bad_hidden
-  http-request deny deny_status 403 if bad_query
-  http-request deny deny_status 403 if bad_method
-
-  acl multi_bad var(txn.bad) ge 2
-  http-request deny deny_status 403 if multi_bad
-
   default_backend hass-backend
 
 backend letsencrypt_http
